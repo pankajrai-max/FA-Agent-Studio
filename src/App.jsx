@@ -1,5 +1,45 @@
 import { useState, useRef, useEffect, useCallback } from "react";
 import { signInWithGoogle, signOutUser, onAuth, isAdminEmail, loadAllAgents, createAgent, updateAgentBlueprint, deleteAgentDoc, requestOrg, approveOrg, rejectOrg, unpublishOrg, loadPendingRequests } from "./firebase.js";
+import * as pdfjsLib from "pdfjs-dist";
+import pdfWorkerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url";
+pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
+
+const MAX_DOC_CHARS = 60000;     // per document
+const MAX_TOTAL_CHARS = 150000;  // across all docs on one agent (Firestore-safe)
+
+async function extractFileText(file) {
+  const name = (file.name || "").toLowerCase();
+  if (name.endsWith(".txt") || file.type === "text/plain") {
+    return await file.text();
+  }
+  if (name.endsWith(".pdf") || file.type === "application/pdf") {
+    const buf = await file.arrayBuffer();
+    const pdf = await pdfjsLib.getDocument({ data: buf }).promise;
+    let text = "";
+    for (let i = 1; i <= pdf.numPages; i++) {
+      const page = await pdf.getPage(i);
+      const content = await page.getTextContent();
+      text += content.items.map(it => it.str).join(" ") + "\n";
+    }
+    return text;
+  }
+  throw new Error("Unsupported file. Please upload a PDF or TXT.");
+}
+
+// Combine an agent's system prompt with its uploaded documents for grounded answers.
+function withKnowledge(systemPrompt, bp) {
+  const docs = (bp && bp.documents) || [];
+  const base = systemPrompt || "You are a helpful assistant.";
+  if (!docs.length) return base;
+  let ctx = "", budget = 120000;
+  for (const d of docs) {
+    const piece = `\n\n### Source: ${d.name}\n${d.text}`;
+    if (piece.length > budget) { ctx += piece.slice(0, budget); break; }
+    ctx += piece; budget -= piece.length;
+  }
+  return `${base}\n\n---\nKNOWLEDGE BASE — when the user's question is covered below, answer using ONLY these documents and cite the source name. If it isn't covered, say so briefly, then answer from general knowledge.${ctx}`;
+}
+
 
 /* ─────────────────────────────────────────────
    CONSTANTS
@@ -714,10 +754,61 @@ function WorkflowTab({ bp }) {
   );
 }
 
-function KnowledgeTab({ bp }) {
+function KnowledgeTab({ bp, onUpdate, canEdit }) {
   const priorityColor = { Critical: C.rose, Important: C.amber, "Nice-to-have": C.textDim };
+  const docs = bp.documents || [];
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState(null);
+
+  const onFile = async (e) => {
+    const file = e.target.files && e.target.files[0];
+    if (e.target) e.target.value = "";
+    if (!file) return;
+    setErr(null); setBusy(true);
+    try {
+      let text = (await extractFileText(file)).replace(/[ \t]+/g, " ").replace(/\n{3,}/g, "\n\n").trim();
+      if (!text) throw new Error("No selectable text found (is it a scanned image PDF?).");
+      if (text.length > MAX_DOC_CHARS) text = text.slice(0, MAX_DOC_CHARS);
+      const total = docs.reduce((n, d) => n + (d.chars || 0), 0) + text.length;
+      if (total > MAX_TOTAL_CHARS) throw new Error("Too much text on this agent. Remove a document first.");
+      await onUpdate({ documents: [...docs, { name: file.name, text, chars: text.length, addedAt: Date.now() }] });
+    } catch (e2) { setErr(e2.message || "Upload failed"); }
+    setBusy(false);
+  };
+  const removeDoc = async (i) => { await onUpdate({ documents: docs.filter((_, x) => x !== i) }); };
+
   return (
     <div style={{ display: "grid", gap: 10 }}>
+      <div style={{ background: C.bg, border: `1px dashed ${C.border}`, borderRadius: 12, padding: 16 }}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
+          <div>
+            <div style={{ fontSize: 14, fontWeight: 700, color: C.white }}>📎 Feed this agent your documents</div>
+            <div style={{ fontSize: 12.5, color: C.textMuted, marginTop: 3 }}>Upload a policy PDF or text file — the agent answers from it and cites the source.</div>
+          </div>
+          {canEdit && (
+            <label style={{ flexShrink: 0, padding: "9px 16px", borderRadius: 9, cursor: busy ? "default" : "pointer", fontSize: 13, fontWeight: 700, color: "#fff", background: busy ? C.surface : `linear-gradient(135deg, ${C.pri}, ${C.sec})`, opacity: busy ? 0.6 : 1 }}>
+              {busy ? "Reading…" : "Upload document"}
+              <input type="file" accept=".pdf,.txt,application/pdf,text/plain" disabled={busy} onChange={onFile} style={{ display: "none" }} />
+            </label>
+          )}
+        </div>
+        {err && <div style={{ marginTop: 10, fontSize: 12.5, color: C.rose }}>{err}</div>}
+        {docs.length > 0 && (
+          <div style={{ marginTop: 12, display: "grid", gap: 8 }}>
+            {docs.map((d, i) => (
+              <div key={i} style={{ display: "flex", alignItems: "center", gap: 10, padding: "9px 12px", background: C.surface, borderRadius: 9 }}>
+                <span style={{ fontSize: 16 }}>📄</span>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontSize: 13, fontWeight: 600, color: C.text, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{d.name}</div>
+                  <div style={{ fontSize: 11, color: C.textDim }}>{Math.round((d.chars || 0) / 1000)}k chars · ready</div>
+                </div>
+                {canEdit && <Btn small variant="danger" onClick={() => removeDoc(i)}>✕</Btn>}
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
       {(bp.knowledgeSources || []).map((k, i) => (
         <div key={i} style={{
           display: "flex", alignItems: "flex-start", gap: 14, padding: 16,
@@ -935,7 +1026,7 @@ function BlueprintScreen({ bp, onTest, onBack, onExport, onClone, onDelete, onUp
     prompt: <PromptTab bp={bp} />,
     tools: <ToolsTab bp={bp} />,
     workflow: <WorkflowTab bp={bp} />,
-    knowledge: <KnowledgeTab bp={bp} />,
+    knowledge: <KnowledgeTab bp={bp} onUpdate={onUpdate} canEdit={canEdit} />,
     memory: <MemoryTab bp={bp} />,
     sample: <SampleTab bp={bp} />,
     edit: <EditTab bp={bp} onUpdate={onUpdate} />,
@@ -1016,7 +1107,7 @@ function TestScreen({ bp, onBack }) {
 
     try {
       const raw = await callClaude(
-        bp.systemPrompt || "You are a helpful assistant.",
+        withKnowledge(bp.systemPrompt, bp),
         history,
       );
       setMsgs(prev => [...prev, { role: "assistant", content: raw }]);
