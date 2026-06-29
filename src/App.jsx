@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, useCallback } from "react";
-import { signInWithGoogle, signOutUser, onAuth, loadUserAgents, saveUserAgents } from "./firebase.js";
+import { signInWithGoogle, signOutUser, onAuth, isAdminEmail, loadAllAgents, createAgent, updateAgentBlueprint, deleteAgentDoc, requestOrg, approveOrg, rejectOrg, unpublishOrg, loadPendingRequests } from "./firebase.js";
 
 /* ─────────────────────────────────────────────
    CONSTANTS
@@ -915,8 +915,10 @@ function EditTab({ bp, onUpdate }) {
 /* ─────────────────────────────────────────────
    BLUEPRINT SCREEN
    ───────────────────────────────────────────── */
-function BlueprintScreen({ bp, onTest, onBack, onExport, onClone, onDelete, onUpdate }) {
+function BlueprintScreen({ bp, onTest, onBack, onExport, onClone, onDelete, onUpdate, currentUid, admin, onRequestOrg }) {
   const [tab, setTab] = useState("overview");
+  const isOwner = bp._ownerUid === currentUid;
+  const canEdit = isOwner || admin;
   const TABS = [
     { id: "overview", label: "Overview", icon: "📋" },
     { id: "prompt", label: "System Prompt", icon: "✍️" },
@@ -925,7 +927,7 @@ function BlueprintScreen({ bp, onTest, onBack, onExport, onClone, onDelete, onUp
     { id: "knowledge", label: "Knowledge", icon: "📚" },
     { id: "memory", label: "Memory", icon: "🧠" },
     { id: "sample", label: "Sample Chat", icon: "💬" },
-    { id: "edit", label: "Edit", icon: "✏️" },
+    ...(canEdit ? [{ id: "edit", label: "Edit", icon: "✏️" }] : []),
   ];
 
   const TAB_MAP = {
@@ -957,13 +959,25 @@ function BlueprintScreen({ bp, onTest, onBack, onExport, onClone, onDelete, onUp
             <div style={{ fontSize: 20, fontWeight: 800, color: C.white, display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
               {bp.agentName}
               {bp._demoMode && <Badge color={C.amber}>Demo</Badge>}
+              {bp._visibility === "org"
+                ? <Badge color={C.emerald}>Org · shared</Badge>
+                : bp._orgStatus === "pending"
+                ? <Badge color={C.amber}>Pending approval</Badge>
+                : bp._orgStatus === "rejected"
+                ? <Badge color={C.rose}>Request declined</Badge>
+                : null}
             </div>
-            <div style={{ fontSize: 13, color: C.textMuted }}>{bp.tagline}</div>
+            <div style={{ fontSize: 13, color: C.textMuted }}>
+              {bp.tagline}{!isOwner && bp._ownerName ? `  ·  shared by ${bp._ownerName}` : ""}
+            </div>
           </div>
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+            {isOwner && bp._visibility !== "org" && bp._orgStatus !== "pending" && (
+              <Btn small variant="secondary" onClick={onRequestOrg}>📣 Request org-wide</Btn>
+            )}
             <Btn small variant="secondary" onClick={onExport}>📥 Export</Btn>
-            <Btn small variant="secondary" onClick={onClone}>📋 Clone</Btn>
-            <Btn small variant="danger" onClick={onDelete}>🗑</Btn>
+            <Btn small variant="secondary" onClick={onClone}>📋 {isOwner ? "Clone" : "Clone to edit"}</Btn>
+            {canEdit && <Btn small variant="danger" onClick={onDelete}>🗑</Btn>}
             <Btn small onClick={onTest}>▶ Test Live</Btn>
           </div>
         </div>
@@ -1287,6 +1301,46 @@ function LoginScreen({ onSignIn }) {
   );
 }
 
+function AdminScreen({ requests, orgAgents, onApprove, onReject, onUnpublish, onOpen, onBack }) {
+  const Row = (a, actions) => (
+    <Card key={a._id} style={{ display: "flex", alignItems: "center", gap: 12, padding: "14px 18px" }}>
+      <div style={{ width: 36, height: 36, borderRadius: 9, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 18, flexShrink: 0, background: `linear-gradient(135deg, ${C.pri}33, ${C.sec}33)` }}>🤖</div>
+      <div style={{ flex: 1, minWidth: 0, cursor: "pointer" }} onClick={() => onOpen(a)}>
+        <div style={{ fontSize: 14, fontWeight: 700, color: C.white, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{a.agentName}</div>
+        <div style={{ fontSize: 12, color: C.textDim, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>by {a._ownerName || a._ownerEmail || "unknown"} · {a.domain}</div>
+      </div>
+      <div style={{ display: "flex", gap: 8 }}>{actions}</div>
+    </Card>
+  );
+  return (
+    <div style={{ maxWidth: 760, margin: "0 auto", padding: "20px 16px 40px" }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 18 }}>
+        <Btn small variant="ghost" onClick={onBack}>← Back</Btn>
+        <div style={{ fontSize: 20, fontWeight: 800, color: C.white }}>🛡 Admin · publishing</div>
+      </div>
+
+      <div style={{ fontSize: 12, fontWeight: 700, color: C.textDim, textTransform: "uppercase", letterSpacing: 1, margin: "4px 0 10px" }}>
+        Pending requests · {requests.length}
+      </div>
+      <div style={{ display: "grid", gap: 10 }}>
+        {requests.length === 0 && <Card style={{ padding: "16px 18px", color: C.textDim, fontSize: 13 }}>No pending requests right now.</Card>}
+        {requests.map(a => Row(a, <>
+          <Btn small variant="success" onClick={() => onApprove(a._id)}>✓ Approve</Btn>
+          <Btn small variant="danger" onClick={() => onReject(a._id)}>Decline</Btn>
+        </>))}
+      </div>
+
+      <div style={{ fontSize: 12, fontWeight: 700, color: C.textDim, textTransform: "uppercase", letterSpacing: 1, margin: "26px 0 10px" }}>
+        Published org-wide · {orgAgents.length}
+      </div>
+      <div style={{ display: "grid", gap: 10 }}>
+        {orgAgents.length === 0 && <Card style={{ padding: "16px 18px", color: C.textDim, fontSize: 13 }}>Nothing published yet.</Card>}
+        {orgAgents.map(a => Row(a, <Btn small variant="secondary" onClick={() => onUnpublish(a._id)}>Unpublish</Btn>))}
+      </div>
+    </div>
+  );
+}
+
 function StudioApp() {
   const [screen, setScreen] = useState("builder");
   const [agents, setAgents] = useState([]);
@@ -1300,17 +1354,28 @@ function StudioApp() {
 
   useEffect(() => onAuth(u => { setUser(u); setAuthReady(true); }), []);
 
-  // Load this user's agents from Firestore when they sign in.
-  useEffect(() => {
-    if (!user) { setAgents([]); setLoaded(false); return; }
-    setLoaded(false);
-    loadUserAgents(user.uid).then(a => { setAgents(a); setLoaded(true); });
+  const [requests, setRequests] = useState([]);
+  const admin = user ? isAdminEmail(user.email) : false;
+  const bpOnly = (a) => { const { _id, _ownerUid, _ownerName, _ownerEmail, _visibility, _orgStatus, ...bp } = a; return bp; };
+
+  const refresh = useCallback(async (selectId) => {
+    if (!user) return;
+    const all = await loadAllAgents(user);
+    setAgents(all); setLoaded(true);
+    if (selectId !== undefined) {
+      const i = all.findIndex(a => a._id === selectId);
+      setActiveIdx(i >= 0 ? i : -1);
+    }
+    if (isAdminEmail(user.email)) setRequests(await loadPendingRequests());
   }, [user]);
 
-  // Save agents to Firestore whenever they change.
+  // Load this user's own + org-shared agents when they sign in.
   useEffect(() => {
-    if (loaded && user) saveUserAgents(user.uid, agents);
-  }, [agents, loaded, user]);
+    if (!user) { setAgents([]); setLoaded(false); setRequests([]); return; }
+    setLoaded(false);
+    loadAllAgents(user).then(a => { setAgents(a); setLoaded(true); });
+    if (isAdminEmail(user.email)) loadPendingRequests().then(setRequests);
+  }, [user]);
 
   const activeBp = activeIdx >= 0 && activeIdx < agents.length ? agents[activeIdx] : null;
 
@@ -1361,16 +1426,12 @@ function StudioApp() {
       bp.complexityScore = bp.complexityScore || 5;
       bp.kpis = bp.kpis || [];
       bp.limitations = bp.limitations || [];
-      bp._createdAt = new Date().toISOString();
+      bp._createdAt = Date.now();
       bp._sourcePrompt = promptText;
       bp._demoMode = usedDemo;
 
-      setAgents(prev => {
-        const next = [bp, ...prev];
-        setActiveIdx(0);
-        return next;
-      });
-      // Small delay so user sees the last phase complete
+      const id = await createAgent(user, bp);
+      await refresh(id);
       setTimeout(() => setScreen("blueprint"), 600);
     } catch (err) {
       // Last-resort safety net — should essentially never hit now.
@@ -1379,32 +1440,42 @@ function StudioApp() {
       setError("Something went wrong building the agent. Please try again.");
       setScreen("builder");
     }
-  }, []);
+  }, [user, refresh]);
 
-  const handleClone = () => {
-    if (!activeBp) return;
-    const clone = { ...JSON.parse(JSON.stringify(activeBp)), agentName: activeBp.agentName + " (Copy)", _createdAt: new Date().toISOString() };
-    setAgents(prev => {
-      const next = [clone, ...prev];
-      setActiveIdx(0);
-      return next;
-    });
+  const handleClone = async () => {
+    if (!activeBp || !user) return;
+    const clone = { ...JSON.parse(JSON.stringify(bpOnly(activeBp))), agentName: activeBp.agentName + " (Copy)", _createdAt: Date.now() };
+    const id = await createAgent(user, clone);
+    await refresh(id);
+    setScreen("blueprint");
   };
 
-  const handleDelete = () => {
-    if (!activeBp) return;
-    setAgents(prev => prev.filter((_, i) => i !== activeIdx));
+  const handleDelete = async () => {
+    if (!activeBp || !user) return;
+    try { if (activeBp._id) await deleteAgentDoc(activeBp._id); } catch (e) { console.error(e); }
     setActiveIdx(-1);
     setScreen("builder");
+    await refresh();
   };
 
   const openAgent = (i) => { setActiveIdx(i); setScreen("blueprint"); };
 
-  const updateAgent = useCallback((patch) => {
-    setAgents(prev => prev.map((a, i) =>
-      i === activeIdx ? { ...a, ...patch, _updatedAt: new Date().toISOString() } : a
-    ));
-  }, [activeIdx]);
+  const updateAgent = useCallback(async (patch) => {
+    if (!activeBp) return;
+    const merged = { ...activeBp, ...patch };
+    setAgents(prev => prev.map(a => a._id === activeBp._id ? merged : a));
+    try { if (activeBp._id) await updateAgentBlueprint(activeBp._id, merged); } catch (e) { console.error(e); }
+  }, [activeBp]);
+
+  const onRequestOrg = async () => {
+    if (!activeBp?._id) return;
+    try { await requestOrg(activeBp._id); } catch (e) { console.error(e); }
+    await refresh(activeBp._id);
+  };
+
+  const adminApprove = async (id) => { try { await approveOrg(id); } catch (e) { console.error(e); } await refresh(); };
+  const adminReject = async (id) => { try { await rejectOrg(id); } catch (e) { console.error(e); } await refresh(); };
+  const adminUnpublish = async (id) => { try { await unpublishOrg(id); } catch (e) { console.error(e); } await refresh(); };
 
   if (!authReady) {
     return <div style={{ minHeight: "100vh", background: C.bg, color: C.textMuted, display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "'Inter', sans-serif" }}>Loading…</div>;
@@ -1464,27 +1535,42 @@ function StudioApp() {
           fontSize: 13, fontWeight: 700, color: C.white, marginBottom: 16,
           background: `linear-gradient(135deg, ${C.pri}, ${C.sec})`,
         }}>＋ New agent</button>
-        <div style={{ fontSize: 10, color: C.textDim, fontWeight: 700, letterSpacing: 1, padding: "0 6px 8px", textTransform: "uppercase" }}>
-          My agents · {agents.length}
-        </div>
-        <div style={{ display: "flex", flexDirection: "column", gap: 2, overflowY: "auto" }}>
-          {agents.length === 0 && (
-            <div style={{ fontSize: 12, color: C.textDim, padding: "6px 8px", lineHeight: 1.5 }}>No agents yet. Build your first one →</div>
-          )}
-          {agents.map((a, i) => {
-            const on = activeIdx === i && screen !== "builder";
+        {admin && (
+          <button onClick={() => setScreen("admin")} style={{
+            display: "flex", alignItems: "center", gap: 8, width: "100%", padding: "8px 12px",
+            borderRadius: 9, border: `1px solid ${C.border}`, cursor: "pointer", fontFamily: "inherit",
+            fontSize: 12.5, fontWeight: 700, color: requests.length ? C.amber : C.textMuted,
+            background: "transparent", marginBottom: 14,
+          }}>🛡 Requests {requests.length ? `· ${requests.length}` : ""}</button>
+        )}
+
+        {(() => {
+          const mine = agents.filter(a => a._ownerUid === user.uid);
+          const org = agents.filter(a => a._visibility === "org" && a._ownerUid !== user.uid);
+          const Item = (a) => {
+            const on = activeBp && activeBp._id === a._id && screen !== "builder";
             return (
-              <button key={i} className="railItem" onClick={() => openAgent(i)} style={{
+              <button key={a._id} className="railItem" onClick={() => openAgent(agents.findIndex(x => x._id === a._id))} style={{
                 display: "flex", alignItems: "center", gap: 8, width: "100%", textAlign: "left",
                 padding: "8px 10px", borderRadius: 8, border: "none", cursor: "pointer",
                 fontFamily: "inherit", background: on ? C.surface : "transparent",
               }}>
-                <span style={{ width: 7, height: 7, borderRadius: "50%", flexShrink: 0, background: on ? C.sec : C.pri }} />
+                <span style={{ width: 7, height: 7, borderRadius: "50%", flexShrink: 0, background: a._visibility === "org" ? C.emerald : on ? C.sec : C.pri }} />
                 <span style={{ flex: 1, minWidth: 0, fontSize: 12.5, fontWeight: on ? 700 : 500, color: on ? C.white : C.textMuted, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{a.agentName}</span>
               </button>
             );
-          })}
-        </div>
+          };
+          return (
+            <div style={{ display: "flex", flexDirection: "column", gap: 2, overflowY: "auto" }}>
+              <div style={{ fontSize: 10, color: C.textDim, fontWeight: 700, letterSpacing: 1, padding: "0 6px 6px", textTransform: "uppercase" }}>My agents · {mine.length}</div>
+              {mine.length === 0 && <div style={{ fontSize: 12, color: C.textDim, padding: "2px 8px 8px", lineHeight: 1.5 }}>None yet — build one →</div>}
+              {mine.map(Item)}
+              <div style={{ fontSize: 10, color: C.textDim, fontWeight: 700, letterSpacing: 1, padding: "14px 6px 6px", textTransform: "uppercase" }}>Org agents · {org.length}</div>
+              {org.length === 0 && <div style={{ fontSize: 12, color: C.textDim, padding: "2px 8px", lineHeight: 1.5 }}>No shared agents yet.</div>}
+              {org.map(Item)}
+            </div>
+          );
+        })()}
         <div style={{ marginTop: "auto", paddingTop: 12, borderTop: `1px solid ${C.border}` }}>
           <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 2px" }}>
             {user.photoURL
@@ -1569,11 +1655,26 @@ function StudioApp() {
             onClone={handleClone}
             onDelete={handleDelete}
             onUpdate={updateAgent}
+            currentUid={user.uid}
+            admin={admin}
+            onRequestOrg={onRequestOrg}
           />
         )}
 
         {screen === "testing" && activeBp && (
           <TestScreen bp={activeBp} onBack={() => setScreen("blueprint")} />
+        )}
+
+        {screen === "admin" && admin && (
+          <AdminScreen
+            requests={requests}
+            orgAgents={agents.filter(a => a._visibility === "org")}
+            onApprove={adminApprove}
+            onReject={adminReject}
+            onUnpublish={adminUnpublish}
+            onOpen={(a) => openAgent(agents.findIndex(x => x._id === a._id))}
+            onBack={() => setScreen("builder")}
+          />
         )}
       </div>
       </div>
