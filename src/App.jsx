@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect, useCallback } from "react";
+import { signInWithGoogle, signOutUser, onAuth, loadUserAgents, saveUserAgents } from "./firebase.js";
 
 /* ─────────────────────────────────────────────
    CONSTANTS
@@ -84,20 +85,7 @@ Make every field substantive and domain-specific. The systemPrompt should be imm
 /* ─────────────────────────────────────────────
    STORAGE HELPERS
    ───────────────────────────────────────────── */
-const STORAGE_KEY = "fa_agent_studio:agents";
-
-async function loadAgents() {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    return raw ? JSON.parse(raw) : [];
-  } catch { return []; }
-}
-
-async function saveAgents(agents) {
-  try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(agents));
-  } catch (e) { console.error("Storage save failed:", e); }
-}
+// Agent storage is handled by Firebase (see firebase.js) — per-user in Firestore.
 
 /* ─────────────────────────────────────────────
    API CALL WITH RETRY
@@ -1276,6 +1264,29 @@ function ExportModal({ bp, onClose }) {
 /* ─────────────────────────────────────────────
    MAIN APP
    ───────────────────────────────────────────── */
+function LoginScreen({ onSignIn }) {
+  const [err, setErr] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const go = async () => { setErr(null); setBusy(true); try { await onSignIn(); } catch (e) { setErr(e?.message || "Sign-in failed"); setBusy(false); } };
+  return (
+    <div style={{ minHeight: "100vh", background: C.bg, color: C.text, display: "flex", alignItems: "center", justifyContent: "center", padding: 20, fontFamily: "'Inter', -apple-system, system-ui, sans-serif" }}>
+      <style>{`@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap'); *{box-sizing:border-box;margin:0;padding:0}`}</style>
+      <div aria-hidden="true" style={{ position: "fixed", inset: 0, pointerEvents: "none", background: "radial-gradient(620px 400px at 80% 6%, rgba(58,123,255,0.18), transparent 60%), radial-gradient(560px 380px at 10% 94%, rgba(255,121,172,0.15), transparent 60%)" }} />
+      <div style={{ position: "relative", zIndex: 1, width: "100%", maxWidth: 400, background: C.card, backdropFilter: "blur(14px)", WebkitBackdropFilter: "blur(14px)", border: `1px solid ${C.border}`, borderRadius: 18, padding: "36px 30px", textAlign: "center" }}>
+        <img src={FA_LOGO} alt="FieldAssist" style={{ height: 26, width: "auto", marginBottom: 18 }} />
+        <div style={{ fontSize: 22, fontWeight: 800, color: C.white, marginBottom: 6 }}>Agent Studio</div>
+        <div style={{ fontSize: 13.5, color: C.textMuted, lineHeight: 1.5, marginBottom: 26 }}>Sign in with your FieldAssist Google account to build and manage your agents.</div>
+        <button onClick={go} disabled={busy} style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 10, width: "100%", padding: "12px", borderRadius: 10, border: "none", cursor: "pointer", fontFamily: "inherit", fontSize: 14, fontWeight: 700, color: "#fff", background: `linear-gradient(135deg, ${C.pri}, ${C.sec})`, opacity: busy ? 0.6 : 1 }}>
+          <svg width="18" height="18" viewBox="0 0 48 48"><path fill="#fff" d="M44.5 20H24v8.5h11.8C34.7 33.4 30 37 24 37c-7.2 0-13-5.8-13-13s5.8-13 13-13c3.3 0 6.3 1.2 8.6 3.3l6-6C42.6 4.9 33.8 1 24 1 11.8 1 2 10.8 2 23s9.8 22 22 22c11 0 21-8 21-22 0-1.3-.2-2.7-.5-3z"/></svg>
+          {busy ? "Signing in…" : "Sign in with Google"}
+        </button>
+        {err && <div style={{ marginTop: 14, fontSize: 12, color: C.rose }}>{err}</div>}
+        <div style={{ marginTop: 22, fontSize: 11, color: C.textDim }}>Powered by FieldAssist</div>
+      </div>
+    </div>
+  );
+}
+
 function StudioApp() {
   const [screen, setScreen] = useState("builder");
   const [agents, setAgents] = useState([]);
@@ -1284,16 +1295,22 @@ function StudioApp() {
   const [error, setError] = useState(null);
   const [showExport, setShowExport] = useState(false);
   const [loaded, setLoaded] = useState(false);
+  const [user, setUser] = useState(null);
+  const [authReady, setAuthReady] = useState(false);
 
-  // Load agents from storage on mount
-  useEffect(() => {
-    loadAgents().then(a => { setAgents(a); setLoaded(true); });
-  }, []);
+  useEffect(() => onAuth(u => { setUser(u); setAuthReady(true); }), []);
 
-  // Save agents to storage whenever they change
+  // Load this user's agents from Firestore when they sign in.
   useEffect(() => {
-    if (loaded) saveAgents(agents);
-  }, [agents, loaded]);
+    if (!user) { setAgents([]); setLoaded(false); return; }
+    setLoaded(false);
+    loadUserAgents(user.uid).then(a => { setAgents(a); setLoaded(true); });
+  }, [user]);
+
+  // Save agents to Firestore whenever they change.
+  useEffect(() => {
+    if (loaded && user) saveUserAgents(user.uid, agents);
+  }, [agents, loaded, user]);
 
   const activeBp = activeIdx >= 0 && activeIdx < agents.length ? agents[activeIdx] : null;
 
@@ -1389,6 +1406,13 @@ function StudioApp() {
     ));
   }, [activeIdx]);
 
+  if (!authReady) {
+    return <div style={{ minHeight: "100vh", background: C.bg, color: C.textMuted, display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "'Inter', sans-serif" }}>Loading…</div>;
+  }
+  if (!user) {
+    return <LoginScreen onSignIn={signInWithGoogle} />;
+  }
+
   return (
     <div style={{
       minHeight: "100vh", background: C.bg, color: C.text,
@@ -1461,8 +1485,20 @@ function StudioApp() {
             );
           })}
         </div>
-        <div style={{ marginTop: "auto", paddingTop: 12, borderTop: `1px solid ${C.border}`, fontSize: 10.5, fontFamily: "'JetBrains Mono', monospace", color: C.textDim }}>
-          v1.0 · {agents.length} agent{agents.length !== 1 ? "s" : ""} live
+        <div style={{ marginTop: "auto", paddingTop: 12, borderTop: `1px solid ${C.border}` }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 2px" }}>
+            {user.photoURL
+              ? <img src={user.photoURL} alt="" style={{ width: 26, height: 26, borderRadius: "50%" }} />
+              : <div style={{ width: 26, height: 26, borderRadius: "50%", background: C.surface }} />}
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={{ fontSize: 11.5, color: C.text, fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{user.displayName || "User"}</div>
+              <div style={{ fontSize: 10, color: C.textDim, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{user.email}</div>
+            </div>
+          </div>
+          <button onClick={signOutUser} style={{ width: "100%", padding: "7px", borderRadius: 8, border: `1px solid ${C.border}`, background: "transparent", color: C.textMuted, cursor: "pointer", fontFamily: "inherit", fontSize: 11.5, marginBottom: 10 }}>Sign out</button>
+          <div style={{ fontSize: 10.5, fontFamily: "'JetBrains Mono', monospace", color: C.textDim }}>
+            v1.0 · {agents.length} agent{agents.length !== 1 ? "s" : ""} live
+          </div>
         </div>
       </aside>
 

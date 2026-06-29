@@ -1,5 +1,5 @@
 {
-  "name": "agentforge",
+  "name": "fa-agent-studio",
   "private": true,
   "version": "1.0.0",
   "type": "module",
@@ -10,7 +10,8 @@
   },
   "dependencies": {
     "react": "^18.3.1",
-    "react-dom": "^18.3.1"
+    "react-dom": "^18.3.1",
+    "firebase": "^10.13.1"
   },
   "devDependencies": {
     "@vitejs/plugin-react": "^4.3.4",
