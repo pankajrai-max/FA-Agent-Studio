@@ -1133,9 +1133,91 @@ function TestScreen({ bp, onBack }) {
 /* ─────────────────────────────────────────────
    EXPORT MODAL
    ───────────────────────────────────────────── */
+/* ─────────────────────────────────────────────
+   EMBEDDABLE CHAT  (Layer 1 — drop into any dashboard)
+   Loads when the URL contains  #embed=<base64 config>
+   ───────────────────────────────────────────── */
+function decodeEmbed() {
+  try {
+    const h = (typeof window !== "undefined" && window.location.hash) || "";
+    const m = h.match(/embed=([^&]+)/);
+    if (!m) return null;
+    return JSON.parse(decodeURIComponent(atob(m[1])));
+  } catch { return null; }
+}
+
+function EmbedChat({ cfg }) {
+  const [msgs, setMsgs] = useState([]);
+  const [input, setInput] = useState("");
+  const [busy, setBusy] = useState(false);
+  const endRef = useRef(null);
+  useEffect(() => { endRef.current?.scrollIntoView({ behavior: "smooth" }); }, [msgs, busy]);
+
+  const send = async (text) => {
+    const q = (text ?? input).trim();
+    if (!q || busy) return;
+    setInput("");
+    const next = [...msgs, { role: "user", content: q }];
+    setMsgs(next); setBusy(true);
+    try {
+      const reply = await callClaude(cfg.systemPrompt || "You are a helpful assistant.", next);
+      setMsgs(m => [...m, { role: "assistant", content: reply }]);
+    } catch {
+      setMsgs(m => [...m, { role: "assistant", content: "Sorry — I couldn't reach the model just now. Please try again." }]);
+    } finally { setBusy(false); }
+  };
+
+  return (
+    <div style={{ height: "100vh", display: "flex", flexDirection: "column", background: C.bg, color: C.text, fontFamily: "'Inter', -apple-system, system-ui, sans-serif" }}>
+      <style>{`@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap'); *{box-sizing:border-box;margin:0;padding:0} input::placeholder{color:${C.textDim}} ::-webkit-scrollbar{width:5px} ::-webkit-scrollbar-thumb{background:${C.border};border-radius:3px}`}</style>
+      <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "12px 16px", borderBottom: `1px solid ${C.border}`, background: C.card }}>
+        <img src={FA_LOGO} alt="FieldAssist" style={{ height: 18, width: "auto" }} />
+        <div style={{ width: 1, height: 18, background: C.border }} />
+        <div style={{ fontSize: 14, fontWeight: 700, color: C.white }}>{cfg.name || "Assistant"}</div>
+        <span style={{ marginLeft: "auto", width: 8, height: 8, borderRadius: "50%", background: C.emerald }} />
+      </div>
+      <div style={{ flex: 1, overflowY: "auto", padding: 16, display: "flex", flexDirection: "column", gap: 12 }}>
+        {msgs.length === 0 && (
+          <div style={{ margin: "auto", textAlign: "center", maxWidth: 280 }}>
+            <div style={{ fontSize: 32, marginBottom: 8 }}>🤖</div>
+            <div style={{ fontSize: 14, color: C.textMuted, lineHeight: 1.5 }}>Hi! I'm {cfg.name || "your assistant"}. Ask me anything to get started.</div>
+          </div>
+        )}
+        {msgs.map((m, i) => (
+          <div key={i} style={{ alignSelf: m.role === "user" ? "flex-end" : "flex-start", maxWidth: "82%" }}>
+            <div style={{
+              padding: "10px 14px", borderRadius: 14, fontSize: 14, lineHeight: 1.55, whiteSpace: "pre-wrap",
+              background: m.role === "user" ? `linear-gradient(135deg, ${C.pri}, ${C.sec})` : C.surface,
+              color: m.role === "user" ? "#fff" : C.text,
+              border: m.role === "user" ? "none" : `1px solid ${C.border}`,
+            }}>{m.content}</div>
+          </div>
+        ))}
+        {busy && <div style={{ alignSelf: "flex-start", padding: "10px 14px", borderRadius: 14, background: C.surface, border: `1px solid ${C.border}`, color: C.textDim, fontSize: 14 }}>typing…</div>}
+        <div ref={endRef} />
+      </div>
+      <div style={{ display: "flex", gap: 8, padding: 12, borderTop: `1px solid ${C.border}`, background: C.card }}>
+        <input value={input} onChange={e => setInput(e.target.value)} onKeyDown={e => { if (e.key === "Enter") send(); }}
+          placeholder="Type your message…"
+          style={{ flex: 1, padding: "11px 14px", fontSize: 14, background: C.bg, color: C.text, border: `1px solid ${C.border}`, borderRadius: 10, outline: "none", fontFamily: "inherit" }} />
+        <button onClick={() => send()} disabled={busy || !input.trim()} style={{
+          padding: "0 18px", borderRadius: 10, border: "none", cursor: "pointer", fontFamily: "inherit",
+          fontSize: 14, fontWeight: 700, color: "#fff", background: `linear-gradient(135deg, ${C.pri}, ${C.sec})`,
+          opacity: busy || !input.trim() ? 0.5 : 1,
+        }}>Send</button>
+      </div>
+      <div style={{ textAlign: "center", fontSize: 10, color: C.textDim, padding: "6px 0", background: C.card }}>Powered by FieldAssist · Agent Studio</div>
+    </div>
+  );
+}
+
 function ExportModal({ bp, onClose }) {
   const [copied, setCopied] = useState(null);
+  const embedCfg = { name: bp.agentName, domain: bp.domain, systemPrompt: bp.systemPrompt };
+  const embedBase = (typeof window !== "undefined") ? (window.location.origin + window.location.pathname) : "https://YOUR-APP.vercel.app/";
+  const embedSnippet = `<iframe\n  src="${embedBase}#embed=${btoa(encodeURIComponent(JSON.stringify(embedCfg)))}"\n  width="400" height="620"\n  style="border:0;border-radius:16px;overflow:hidden"\n  title="${bp.agentName}">\n</iframe>`;
   const sections = [
+    { key: "embed", label: "🔗 Embed in your dashboard (paste this iframe)", data: embedSnippet },
     { key: "full", label: "Full Blueprint (JSON)", data: JSON.stringify(bp, null, 2) },
     { key: "prompt", label: "System Prompt Only", data: bp.systemPrompt || "" },
     { key: "config", label: "Agent Config (for API)", data: JSON.stringify({
@@ -1194,7 +1276,7 @@ function ExportModal({ bp, onClose }) {
 /* ─────────────────────────────────────────────
    MAIN APP
    ───────────────────────────────────────────── */
-export default function FAAgentStudio() {
+function StudioApp() {
   const [screen, setScreen] = useState("builder");
   const [agents, setAgents] = useState([]);
   const [activeIdx, setActiveIdx] = useState(-1);
@@ -1466,4 +1548,9 @@ export default function FAAgentStudio() {
       )}
     </div>
   );
+}
+
+export default function FAAgentStudio() {
+  const cfg = decodeEmbed();
+  return cfg ? <EmbedChat cfg={cfg} /> : <StudioApp />;
 }
