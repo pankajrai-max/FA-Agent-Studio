@@ -137,7 +137,7 @@ async function callClaude(systemMsg, messages, retries = 2) {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          model: "claude-sonnet-4-6",
+          model: "gpt-4o", // server overrides via OPENAI_MODEL; kept for clarity
           max_tokens: 4096,
           system: systemMsg,
           messages,
@@ -558,7 +558,7 @@ function BuilderScreen({ onForge, agents, onOpen }) {
       {agents.length > 0 && (
         <div>
           <div style={{ fontSize: 12, fontWeight: 700, color: C.textDim, textTransform: "uppercase", letterSpacing: 1.5, marginBottom: 12, paddingLeft: 2 }}>
-            Your Agents ({agents.length})
+            Agents ({agents.length})
           </div>
           <div style={{ display: "grid", gap: 8 }}>
             {agents.map((a, i) => (
@@ -1026,11 +1026,14 @@ function BlueprintScreen({ bp, onTest, onBack, onExport, onClone, onDelete, onUp
     prompt: <PromptTab bp={bp} />,
     tools: <ToolsTab bp={bp} />,
     workflow: <WorkflowTab bp={bp} />,
-    knowledge: <KnowledgeTab bp={bp} onUpdate={onUpdate} canEdit={canEdit} />,
+    knowledge: <KnowledgeTab key={bp._id} bp={bp} onUpdate={onUpdate} canEdit={canEdit} />,
     memory: <MemoryTab bp={bp} />,
     sample: <SampleTab bp={bp} />,
-    edit: <EditTab bp={bp} onUpdate={onUpdate} />,
+    edit: canEdit ? <EditTab key={bp._id} bp={bp} onUpdate={onUpdate} /> : null,
   };
+  // Guard: if the selected tab isn't available for this agent (e.g. Edit on a
+  // teammate's org agent, or a stale tab after switching agents), fall back.
+  const safeTab = TABS.some(t => t.id === tab) ? tab : "overview";
 
   return (
     <div style={{ maxWidth: 820, margin: "0 auto", padding: "16px 16px 32px" }}>
@@ -1046,7 +1049,7 @@ function BlueprintScreen({ bp, onTest, onBack, onExport, onClone, onDelete, onUp
             justifyContent: "center", fontSize: 24, flexShrink: 0,
             background: `linear-gradient(135deg, ${C.pri}, #8b5cf6)`,
           }}>🤖</div>
-          <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ flex: "1 1 240px", minWidth: 200 }}>
             <div style={{ fontSize: 20, fontWeight: 800, color: C.white, display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
               {bp.agentName}
               {bp._demoMode && <Badge color={C.amber}>Demo</Badge>}
@@ -1062,7 +1065,7 @@ function BlueprintScreen({ bp, onTest, onBack, onExport, onClone, onDelete, onUp
               {bp.tagline}{!isOwner && bp._ownerName ? `  ·  shared by ${bp._ownerName}` : ""}
             </div>
           </div>
-          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap", flex: "0 0 auto", marginLeft: "auto" }}>
             {isOwner && bp._visibility !== "org" && bp._orgStatus !== "pending" && (
               <Btn small variant="secondary" onClick={onRequestOrg}>📣 Request org-wide</Btn>
             )}
@@ -1073,10 +1076,10 @@ function BlueprintScreen({ bp, onTest, onBack, onExport, onClone, onDelete, onUp
           </div>
         </div>
 
-        <TabBar tabs={TABS} active={tab} onChange={setTab} />
+        <TabBar tabs={TABS} active={safeTab} onChange={setTab} />
 
         <div style={{ padding: 22, minHeight: 300, maxHeight: "58vh", overflowY: "auto" }}>
-          {TAB_MAP[tab]}
+          {TAB_MAP[safeTab]}
         </div>
       </Card>
     </div>
@@ -1114,7 +1117,7 @@ function TestScreen({ bp, onBack }) {
     } catch {
       // Offline fallback — keep the demo flowing with an on-character reply.
       const demoReply = bp._demoMode
-        ? `Here's how I'd handle that as ${bp.agentName || "your agent"}:\n\nI'd answer using my connected knowledge sources, keep it concise, and confirm it resolved your need — escalating to a human with full context if it's outside my scope.\n\n(Demo mode: add an Anthropic API key to get fully live, dynamic responses here.)`
+        ? `Here's how I'd handle that as ${bp.agentName || "your agent"}:\n\nI'd answer using my connected knowledge sources, keep it concise, and confirm it resolved your need — escalating to a human with full context if it's outside my scope.\n\n(Demo mode: a working OpenAI key on the server gives fully live, dynamic responses here.)`
         : "⚠️ Couldn't reach the model. Try again, or add an API key for live responses.";
       setMsgs(prev => [...prev, { role: "assistant", content: demoReply }]);
     }
@@ -1535,7 +1538,7 @@ function StudioApp() {
 
   const handleClone = async () => {
     if (!activeBp || !user) return;
-    const clone = { ...JSON.parse(JSON.stringify(bpOnly(activeBp))), agentName: activeBp.agentName + " (Copy)", _createdAt: Date.now() };
+    const clone = { ...JSON.parse(JSON.stringify(bpOnly(activeBp))), agentName: activeBp.agentName + " (Copy)", _createdAt: Date.now(), _demoMode: false, _sourcePrompt: undefined };
     const id = await createAgent(user, clone);
     await refresh(id);
     setScreen("blueprint");
