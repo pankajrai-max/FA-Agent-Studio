@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, useCallback } from "react";
-import { signInWithGoogle, signOutUser, onAuth, isAdminEmail, loadAllAgents, createAgent, updateAgentBlueprint, deleteAgentDoc, requestOrg, approveOrg, rejectOrg, unpublishOrg, loadPendingRequests } from "./firebase.js";
+import { signInWithGoogle, signOutUser, onAuth, isAdminEmail, loadAllAgents, createAgent, updateAgentBlueprint, deleteAgentDoc, requestOrg, approveOrg, rejectOrg, unpublishOrg, loadPendingRequests, upsertUserProfile, loadAllUsers } from "./firebase.js";
 import * as pdfjsLib from "pdfjs-dist";
 import pdfWorkerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url";
 pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
@@ -435,7 +435,7 @@ function ForgeScreen({ phaseIdx }) {
             WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent",
           }}>Building your agent</div>
           <div style={{ fontSize: 11.5, fontFamily: "'JetBrains Mono', monospace", color: C.emerald, marginTop: 2 }}>
-            ● running · claude-sonnet-4.6
+            ● running · FA Agent Studio
           </div>
         </div>
       </div>
@@ -1040,32 +1040,34 @@ function BlueprintScreen({ bp, onTest, onBack, onExport, onClone, onDelete, onUp
       <Card>
         {/* Header */}
         <div style={{
-          display: "flex", alignItems: "center", gap: 14, padding: "18px 22px",
-          borderBottom: `1px solid ${C.border}`, flexWrap: "wrap",
+          display: "flex", flexDirection: "column", gap: 14, padding: "18px 22px",
+          borderBottom: `1px solid ${C.border}`,
         }}>
-          <Btn small variant="ghost" onClick={onBack}>← Back</Btn>
-          <div style={{
-            width: 48, height: 48, borderRadius: 12, display: "flex", alignItems: "center",
-            justifyContent: "center", fontSize: 24, flexShrink: 0,
-            background: `linear-gradient(135deg, ${C.pri}, #8b5cf6)`,
-          }}>🤖</div>
-          <div style={{ flex: "1 1 240px", minWidth: 200 }}>
-            <div style={{ fontSize: 20, fontWeight: 800, color: C.white, display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-              {bp.agentName}
-              {bp._demoMode && <Badge color={C.amber}>Demo</Badge>}
-              {bp._visibility === "org"
-                ? <Badge color={C.emerald}>Org · shared</Badge>
-                : bp._orgStatus === "pending"
-                ? <Badge color={C.amber}>Pending approval</Badge>
-                : bp._orgStatus === "rejected"
-                ? <Badge color={C.rose}>Request declined</Badge>
-                : null}
-            </div>
-            <div style={{ fontSize: 13, color: C.textMuted }}>
-              {bp.tagline}{!isOwner && bp._ownerName ? `  ·  shared by ${bp._ownerName}` : ""}
+          <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
+            <Btn small variant="ghost" onClick={onBack}>← Back</Btn>
+            <div style={{
+              width: 48, height: 48, borderRadius: 12, display: "flex", alignItems: "center",
+              justifyContent: "center", fontSize: 24, flexShrink: 0,
+              background: `linear-gradient(135deg, ${C.pri}, #8b5cf6)`,
+            }}>🤖</div>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={{ fontSize: 20, fontWeight: 800, color: C.white, display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                <span>{bp.agentName}</span>
+                {bp._demoMode && <Badge color={C.amber}>Demo</Badge>}
+                {bp._visibility === "org"
+                  ? <Badge color={C.emerald}>Org · shared</Badge>
+                  : bp._orgStatus === "pending"
+                  ? <Badge color={C.amber}>Pending approval</Badge>
+                  : bp._orgStatus === "rejected"
+                  ? <Badge color={C.rose}>Request declined</Badge>
+                  : null}
+              </div>
+              <div style={{ fontSize: 13, color: C.textMuted, marginTop: 3, lineHeight: 1.45 }}>
+                {bp.tagline}{!isOwner && bp._ownerName ? `  ·  shared by ${bp._ownerName}` : ""}
+              </div>
             </div>
           </div>
-          <div style={{ display: "flex", gap: 8, flexWrap: "wrap", flex: "0 0 auto", marginLeft: "auto" }}>
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap", justifyContent: "flex-end" }}>
             {isOwner && bp._visibility !== "org" && bp._orgStatus !== "pending" && (
               <Btn small variant="secondary" onClick={onRequestOrg}>📣 Request org-wide</Btn>
             )}
@@ -1395,7 +1397,16 @@ function LoginScreen({ onSignIn }) {
   );
 }
 
-function AdminScreen({ requests, orgAgents, onApprove, onReject, onUnpublish, onOpen, onBack }) {
+function AdminScreen({ requests, users = [], adminEmail, orgAgents, onApprove, onReject, onUnpublish, onOpen, onBack }) {
+  const timeAgo = (ts) => {
+    if (!ts) return "—";
+    const m = Math.floor((Date.now() - ts) / 60000);
+    if (m < 1) return "just now";
+    if (m < 60) return `${m}m ago`;
+    const h = Math.floor(m / 60);
+    if (h < 24) return `${h}h ago`;
+    return `${Math.floor(h / 24)}d ago`;
+  };
   const Row = (a, actions) => (
     <Card key={a._id} style={{ display: "flex", alignItems: "center", gap: 12, padding: "14px 18px" }}>
       <div style={{ width: 36, height: 36, borderRadius: 9, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 18, flexShrink: 0, background: `linear-gradient(135deg, ${C.pri}33, ${C.sec}33)` }}>🤖</div>
@@ -1410,10 +1421,31 @@ function AdminScreen({ requests, orgAgents, onApprove, onReject, onUnpublish, on
     <div style={{ maxWidth: 760, margin: "0 auto", padding: "20px 16px 40px" }}>
       <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 18 }}>
         <Btn small variant="ghost" onClick={onBack}>← Back</Btn>
-        <div style={{ fontSize: 20, fontWeight: 800, color: C.white }}>🛡 Admin · publishing</div>
+        <div style={{ fontSize: 20, fontWeight: 800, color: C.white }}>🛡 Admin</div>
       </div>
 
       <div style={{ fontSize: 12, fontWeight: 700, color: C.textDim, textTransform: "uppercase", letterSpacing: 1, margin: "4px 0 10px" }}>
+        People · {users.length}
+      </div>
+      <div style={{ display: "grid", gap: 8, marginBottom: 8 }}>
+        {users.length === 0 && <Card style={{ padding: "16px 18px", color: C.textDim, fontSize: 13 }}>No one has signed in yet. People appear here after their first login.</Card>}
+        {users.map(u => (
+          <Card key={u.uid} style={{ display: "flex", alignItems: "center", gap: 12, padding: "12px 16px" }}>
+            {u.photo
+              ? <img src={u.photo} alt="" style={{ width: 32, height: 32, borderRadius: "50%", flexShrink: 0 }} />
+              : <div style={{ width: 32, height: 32, borderRadius: "50%", flexShrink: 0, background: C.surface }} />}
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={{ fontSize: 13.5, fontWeight: 700, color: C.white, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                {u.name || "—"} {u.email === adminEmail && <Badge color={C.pri}>Admin</Badge>}
+              </div>
+              <div style={{ fontSize: 12, color: C.textDim, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{u.email}</div>
+            </div>
+            <div style={{ fontSize: 11, color: C.textDim, flexShrink: 0 }}>active {timeAgo(u.lastSeen)}</div>
+          </Card>
+        ))}
+      </div>
+
+      <div style={{ fontSize: 12, fontWeight: 700, color: C.textDim, textTransform: "uppercase", letterSpacing: 1, margin: "26px 0 10px" }}>
         Pending requests · {requests.length}
       </div>
       <div style={{ display: "grid", gap: 10 }}>
@@ -1449,6 +1481,7 @@ function StudioApp() {
   useEffect(() => onAuth(u => { setUser(u); setAuthReady(true); }), []);
 
   const [requests, setRequests] = useState([]);
+  const [users, setUsers] = useState([]);
   const admin = user ? isAdminEmail(user.email) : false;
   const bpOnly = (a) => { const { _id, _ownerUid, _ownerName, _ownerEmail, _visibility, _orgStatus, ...bp } = a; return bp; };
 
@@ -1460,15 +1493,16 @@ function StudioApp() {
       const i = all.findIndex(a => a._id === selectId);
       setActiveIdx(i >= 0 ? i : -1);
     }
-    if (isAdminEmail(user.email)) setRequests(await loadPendingRequests());
+    if (isAdminEmail(user.email)) { setRequests(await loadPendingRequests()); setUsers(await loadAllUsers()); }
   }, [user]);
 
   // Load this user's own + org-shared agents when they sign in.
   useEffect(() => {
     if (!user) { setAgents([]); setLoaded(false); setRequests([]); return; }
     setLoaded(false);
+    upsertUserProfile(user);
     loadAllAgents(user).then(a => { setAgents(a); setLoaded(true); });
-    if (isAdminEmail(user.email)) loadPendingRequests().then(setRequests);
+    if (isAdminEmail(user.email)) { loadPendingRequests().then(setRequests); loadAllUsers().then(setUsers); }
   }, [user]);
 
   const activeBp = activeIdx >= 0 && activeIdx < agents.length ? agents[activeIdx] : null;
@@ -1762,6 +1796,8 @@ function StudioApp() {
         {screen === "admin" && admin && (
           <AdminScreen
             requests={requests}
+            users={users}
+            adminEmail={user.email}
             orgAgents={agents.filter(a => a._visibility === "org")}
             onApprove={adminApprove}
             onReject={adminReject}

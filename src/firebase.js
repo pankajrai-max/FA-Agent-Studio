@@ -94,3 +94,23 @@ export async function loadPendingRequests() {
     return q.docs.map(toItem);
   } catch (e) { console.error("load pending failed:", e); return []; }
 }
+
+// User directory — records each person on login so the admin can see who's using it.
+export async function upsertUserProfile(user) {
+  try {
+    await setDoc(doc(db, "users", user.uid), {
+      email: user.email || "", name: user.displayName || "", photo: user.photoURL || "",
+      lastSeen: Date.now(),
+    }, { merge: true });
+  } catch (e) { console.error("upsertUserProfile failed:", e); }
+}
+
+export async function loadAllUsers() {
+  try {
+    const snap = await getDocs(collection(db, "users"));
+    return snap.docs
+      .map(d => ({ uid: d.id, ...d.data() }))
+      .filter(u => u.email)
+      .sort((a, b) => (b.lastSeen || 0) - (a.lastSeen || 0));
+  } catch (e) { console.error("loadAllUsers failed:", e); return []; }
+}
