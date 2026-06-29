@@ -2,9 +2,23 @@ rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
 
+    function adminList() {
+      return exists(/databases/$(database)/documents/config/admins)
+        ? get(/databases/$(database)/documents/config/admins).data.emails
+        : [];
+    }
     function isAdmin() {
-      return request.auth != null
-        && request.auth.token.email == 'pankaj.rai@flick2know.com';
+      return request.auth != null && (
+        request.auth.token.email == 'pankaj.rai@flick2know.com' ||
+        request.auth.token.email in adminList()
+      );
+    }
+
+    // Admin list — anyone signed in can read it (to know their own status);
+    // only an existing admin can change it (prevents self-promotion).
+    match /config/admins {
+      allow read: if request.auth != null;
+      allow write: if isAdmin();
     }
 
     // User directory: each person writes their own profile; admin can read everyone.

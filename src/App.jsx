@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, useCallback } from "react";
-import { signInWithGoogle, signOutUser, onAuth, isAdminEmail, loadAllAgents, createAgent, updateAgentBlueprint, deleteAgentDoc, requestOrg, approveOrg, rejectOrg, unpublishOrg, loadPendingRequests, upsertUserProfile, loadAllUsers } from "./firebase.js";
+import { signInWithGoogle, signOutUser, onAuth, isAdminEmail, loadAllAgents, createAgent, updateAgentBlueprint, deleteAgentDoc, requestOrg, approveOrg, rejectOrg, unpublishOrg, loadPendingRequests, upsertUserProfile, loadAllUsers, ADMIN_EMAIL, loadAdminEmails, addAdmin, removeAdmin } from "./firebase.js";
 import * as pdfjsLib from "pdfjs-dist";
 import pdfWorkerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url";
 pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
@@ -1397,7 +1397,8 @@ function LoginScreen({ onSignIn }) {
   );
 }
 
-function AdminScreen({ requests, users = [], adminEmail, orgAgents, onApprove, onReject, onUnpublish, onOpen, onBack }) {
+function AdminScreen({ requests, users = [], adminEmail, adminEmails = [], bootstrapEmail, onMakeAdmin, onRemoveAdmin, orgAgents, onApprove, onReject, onUnpublish, onOpen, onBack }) {
+  const isUserAdmin = (email) => (email || "").toLowerCase() === (bootstrapEmail || "").toLowerCase() || adminEmails.includes((email || "").toLowerCase());
   const timeAgo = (ts) => {
     if (!ts) return "—";
     const m = Math.floor((Date.now() - ts) / 60000);
@@ -1435,12 +1436,20 @@ function AdminScreen({ requests, users = [], adminEmail, orgAgents, onApprove, o
               ? <img src={u.photo} alt="" style={{ width: 32, height: 32, borderRadius: "50%", flexShrink: 0 }} />
               : <div style={{ width: 32, height: 32, borderRadius: "50%", flexShrink: 0, background: C.surface }} />}
             <div style={{ flex: 1, minWidth: 0 }}>
-              <div style={{ fontSize: 13.5, fontWeight: 700, color: C.white, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                {u.name || "—"} {u.email === adminEmail && <Badge color={C.pri}>Admin</Badge>}
+              <div style={{ fontSize: 13.5, fontWeight: 700, color: C.white, display: "flex", alignItems: "center", gap: 6, overflow: "hidden" }}>
+                <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{u.name || "—"}</span>
+                {isUserAdmin(u.email) && <Badge color={C.pri}>Admin</Badge>}
               </div>
               <div style={{ fontSize: 12, color: C.textDim, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{u.email}</div>
             </div>
-            <div style={{ fontSize: 11, color: C.textDim, flexShrink: 0 }}>active {timeAgo(u.lastSeen)}</div>
+            <div style={{ display: "flex", alignItems: "center", gap: 10, flexShrink: 0 }}>
+              <span style={{ fontSize: 11, color: C.textDim }}>active {timeAgo(u.lastSeen)}</span>
+              {(u.email || "").toLowerCase() === (bootstrapEmail || "").toLowerCase()
+                ? null
+                : isUserAdmin(u.email)
+                ? <Btn small variant="secondary" onClick={() => onRemoveAdmin(u.email)}>Remove admin</Btn>
+                : <Btn small variant="secondary" onClick={() => onMakeAdmin(u.email)}>Make admin</Btn>}
+            </div>
           </Card>
         ))}
       </div>
@@ -1482,7 +1491,8 @@ function StudioApp() {
 
   const [requests, setRequests] = useState([]);
   const [users, setUsers] = useState([]);
-  const admin = user ? isAdminEmail(user.email) : false;
+  const [adminEmails, setAdminEmails] = useState([]);
+  const admin = user ? (isAdminEmail(user.email) || adminEmails.includes((user.email || "").toLowerCase())) : false;
   const bpOnly = (a) => { const { _id, _ownerUid, _ownerName, _ownerEmail, _visibility, _orgStatus, ...bp } = a; return bp; };
 
   const refresh = useCallback(async (selectId) => {
@@ -1493,8 +1503,9 @@ function StudioApp() {
       const i = all.findIndex(a => a._id === selectId);
       setActiveIdx(i >= 0 ? i : -1);
     }
-    if (isAdminEmail(user.email)) { setRequests(await loadPendingRequests()); setUsers(await loadAllUsers()); }
-  }, [user]);
+    setAdminEmails(await loadAdminEmails());
+    if (admin) { setRequests(await loadPendingRequests()); setUsers(await loadAllUsers()); }
+  }, [user, admin]);
 
   // Load this user's own + org-shared agents when they sign in.
   useEffect(() => {
@@ -1502,7 +1513,9 @@ function StudioApp() {
     setLoaded(false);
     upsertUserProfile(user);
     loadAllAgents(user).then(a => { setAgents(a); setLoaded(true); });
-    if (isAdminEmail(user.email)) { loadPendingRequests().then(setRequests); loadAllUsers().then(setUsers); }
+    loadAdminEmails().then(setAdminEmails);
+    loadPendingRequests().then(setRequests).catch(() => {});
+    loadAllUsers().then(setUsers).catch(() => {});
   }, [user]);
 
   const activeBp = activeIdx >= 0 && activeIdx < agents.length ? agents[activeIdx] : null;
@@ -1572,10 +1585,19 @@ function StudioApp() {
 
   const handleClone = async () => {
     if (!activeBp || !user) return;
-    const clone = { ...JSON.parse(JSON.stringify(bpOnly(activeBp))), agentName: activeBp.agentName + " (Copy)", _createdAt: Date.now(), _demoMode: false, _sourcePrompt: undefined };
-    const id = await createAgent(user, clone);
-    await refresh(id);
-    setScreen("blueprint");
+    const clone = JSON.parse(JSON.stringify(bpOnly(activeBp)));
+    clone.agentName = (activeBp.agentName || "Agent") + " (Copy)";
+    clone._createdAt = Date.now();
+    clone._demoMode = false;
+    delete clone._sourcePrompt;
+    try {
+      const id = await createAgent(user, clone);
+      await refresh(id);
+      setScreen("blueprint");
+    } catch (e) {
+      console.error("Clone failed:", e);
+      setError("Couldn't clone this agent. Please try again.");
+    }
   };
 
   const handleDelete = async () => {
@@ -1604,6 +1626,8 @@ function StudioApp() {
   const adminApprove = async (id) => { try { await approveOrg(id); } catch (e) { console.error(e); } await refresh(); };
   const adminReject = async (id) => { try { await rejectOrg(id); } catch (e) { console.error(e); } await refresh(); };
   const adminUnpublish = async (id) => { try { await unpublishOrg(id); } catch (e) { console.error(e); } await refresh(); };
+  const onMakeAdmin = async (email) => { try { await addAdmin(email); } catch (e) { console.error(e); } setAdminEmails(await loadAdminEmails()); };
+  const onRemoveAdmin = async (email) => { try { await removeAdmin(email); } catch (e) { console.error(e); } setAdminEmails(await loadAdminEmails()); };
 
   if (!authReady) {
     return <div style={{ minHeight: "100vh", background: C.bg, color: C.textMuted, display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "'Inter', sans-serif" }}>Loading…</div>;
@@ -1798,6 +1822,10 @@ function StudioApp() {
             requests={requests}
             users={users}
             adminEmail={user.email}
+            adminEmails={adminEmails}
+            bootstrapEmail={ADMIN_EMAIL}
+            onMakeAdmin={onMakeAdmin}
+            onRemoveAdmin={onRemoveAdmin}
             orgAgents={agents.filter(a => a._visibility === "org")}
             onApprove={adminApprove}
             onReject={adminReject}

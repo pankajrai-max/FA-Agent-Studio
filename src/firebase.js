@@ -2,7 +2,7 @@ import { initializeApp } from "firebase/app";
 import { getAuth, GoogleAuthProvider, signInWithPopup, signOut, onAuthStateChanged } from "firebase/auth";
 import {
   getFirestore, collection, doc, getDoc, getDocs, setDoc, addDoc,
-  updateDoc, deleteDoc, query, where,
+  updateDoc, deleteDoc, query, where, arrayUnion, arrayRemove,
 } from "firebase/firestore";
 
 const firebaseConfig = {
@@ -29,6 +29,8 @@ export function onAuth(cb) { return onAuthStateChanged(auth, cb); }
 
 const agentsCol = collection(db, "agents");
 const stripMeta = (a) => { const { _id, _ownerUid, _ownerName, _ownerEmail, _visibility, _orgStatus, ...bp } = a; return bp; };
+// Firestore rejects `undefined` values. JSON round-trip drops undefined keys and functions.
+const sanitize = (o) => JSON.parse(JSON.stringify(o == null ? {} : o));
 const toItem = (d) => {
   const x = d.data();
   return { ...(x.blueprint || {}), _id: d.id, _ownerUid: x.ownerUid, _ownerName: x.ownerName, _ownerEmail: x.ownerEmail, _visibility: x.visibility || "personal", _orgStatus: x.orgStatus || "none" };
@@ -45,7 +47,7 @@ async function migrateIfNeeded(user) {
     for (const bp of data.agents) {
       await addDoc(agentsCol, {
         ownerUid: user.uid, ownerName: user.displayName || "", ownerEmail: user.email || "",
-        visibility: "personal", orgStatus: "none", blueprint: bp,
+        visibility: "personal", orgStatus: "none", blueprint: sanitize(bp),
         createdAt: bp._createdAt || Date.now(), updatedAt: Date.now(),
       });
     }
@@ -71,13 +73,13 @@ export async function loadAllAgents(user) {
 export async function createAgent(user, bp) {
   const ref = await addDoc(agentsCol, {
     ownerUid: user.uid, ownerName: user.displayName || "", ownerEmail: user.email || "",
-    visibility: "personal", orgStatus: "none", blueprint: stripMeta(bp),
+    visibility: "personal", orgStatus: "none", blueprint: sanitize(stripMeta(bp)),
     createdAt: bp._createdAt || Date.now(), updatedAt: Date.now(),
   });
   return ref.id;
 }
 export async function updateAgentBlueprint(id, bp) {
-  await updateDoc(doc(db, "agents", id), { blueprint: stripMeta(bp), updatedAt: Date.now() });
+  await updateDoc(doc(db, "agents", id), { blueprint: sanitize(stripMeta(bp)), updatedAt: Date.now() });
 }
 export async function deleteAgentDoc(id) { await deleteDoc(doc(db, "agents", id)); }
 
@@ -113,4 +115,19 @@ export async function loadAllUsers() {
       .filter(u => u.email)
       .sort((a, b) => (b.lastSeen || 0) - (a.lastSeen || 0));
   } catch (e) { console.error("loadAllUsers failed:", e); return []; }
+}
+
+// Admin management — a single config/admins doc holds the list of admin emails.
+// The bootstrap ADMIN_EMAIL is always admin; admins can grant/revoke others.
+export async function loadAdminEmails() {
+  try {
+    const snap = await getDoc(doc(db, "config", "admins"));
+    return snap.exists() ? (snap.data().emails || []) : [];
+  } catch (e) { console.error("loadAdminEmails failed:", e); return []; }
+}
+export async function addAdmin(email) {
+  await setDoc(doc(db, "config", "admins"), { emails: arrayUnion((email || "").toLowerCase()) }, { merge: true });
+}
+export async function removeAdmin(email) {
+  await setDoc(doc(db, "config", "admins"), { emails: arrayRemove((email || "").toLowerCase()) }, { merge: true });
 }
