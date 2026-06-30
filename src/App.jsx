@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, useCallback } from "react";
-import { signInWithGoogle, signOutUser, onAuth, isAdminEmail, loadAllAgents, createAgent, updateAgentBlueprint, deleteAgentDoc, requestOrg, approveOrg, rejectOrg, unpublishOrg, loadPendingRequests, upsertUserProfile, loadAllUsers, ADMIN_EMAIL, loadAdminEmails, addAdmin, removeAdmin } from "./firebase.js";
+import { signInWithGoogle, signOutUser, onAuth, isAdminEmail, loadAllAgents, createAgent, updateAgentBlueprint, deleteAgentDoc, requestOrg, approveOrg, rejectOrg, unpublishOrg, loadPendingRequests, upsertUserProfile, loadAllUsers, ADMIN_EMAIL, loadAdminEmails, addAdmin, removeAdmin, loadConnections, saveConnections } from "./firebase.js";
 import * as pdfjsLib from "pdfjs-dist";
 import pdfWorkerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url";
 pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
@@ -696,27 +696,90 @@ function PromptTab({ bp }) {
   );
 }
 
-function ToolsTab({ bp }) {
+function ToolsTab({ bp, canEdit, connections = {}, onSaveConn, onRemoveConn }) {
+  const [editing, setEditing] = useState(null);
+  const [form, setForm] = useState({ baseUrl: "", authHeader: "Authorization", authValue: "", notes: "" });
+  const [saving, setSaving] = useState(false);
+
+  const openForm = (name) => {
+    const c = connections[name] || {};
+    setForm({ baseUrl: c.baseUrl || "", authHeader: c.authHeader || "Authorization", authValue: c.authValue || "", notes: c.notes || "" });
+    setEditing(name);
+  };
+  const save = async () => {
+    if (!form.baseUrl.trim()) return;
+    setSaving(true);
+    await onSaveConn(editing, {
+      baseUrl: form.baseUrl.trim(),
+      authHeader: (form.authHeader || "Authorization").trim(),
+      authValue: form.authValue || "",
+      notes: form.notes || "",
+      connectedAt: Date.now(),
+    });
+    setSaving(false); setEditing(null);
+  };
+  const disconnect = async (name) => {
+    await onRemoveConn(name);
+    if (editing === name) setEditing(null);
+  };
+
+  const inp = { width: "100%", padding: "9px 12px", fontSize: 13, background: C.bg, color: C.text, border: `1px solid ${C.border}`, borderRadius: 8, outline: "none", fontFamily: "inherit" };
+  const lbl = { fontSize: 11.5, fontWeight: 700, color: C.textDim, marginBottom: 5, display: "block" };
+
   return (
     <div style={{ display: "grid", gap: 10 }}>
-      {(bp.tools || []).map((t, i) => (
-        <div key={i} style={{
-          display: "flex", alignItems: "center", gap: 14, padding: 16,
-          background: C.bg, borderRadius: 12, border: `1px solid ${C.border}`,
-        }}>
-          <div style={{
-            width: 44, height: 44, borderRadius: 10, display: "flex", alignItems: "center",
-            justifyContent: "center", fontSize: 22, background: C.surface, flexShrink: 0,
-          }}>{t.icon || "🔧"}</div>
-          <div style={{ flex: 1 }}>
-            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-              <span style={{ fontSize: 15, fontWeight: 700, color: C.white }}>{t.name}</span>
-              {t.priority && <Badge color={t.priority === "Required" ? C.emerald : C.textDim}>{t.priority}</Badge>}
+      {(bp.tools || []).map((t, i) => {
+        const connected = !!connections[t.name];
+        const open = editing === t.name;
+        return (
+          <div key={i} style={{ background: C.bg, borderRadius: 12, border: `1px solid ${connected ? C.emerald + "55" : C.border}` }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 14, padding: 16 }}>
+              <div style={{ width: 44, height: 44, borderRadius: 10, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 22, background: C.surface, flexShrink: 0 }}>{t.icon || "🔧"}</div>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                  <span style={{ fontSize: 15, fontWeight: 700, color: C.white }}>{t.name}</span>
+                  {t.priority && <Badge color={t.priority === "Required" ? C.emerald : C.textDim}>{t.priority}</Badge>}
+                  {connected && <Badge color={C.emerald}>● Connected</Badge>}
+                </div>
+                <div style={{ fontSize: 13, color: C.textMuted, marginTop: 2 }}>{t.purpose}</div>
+              </div>
+              <div style={{ display: "flex", gap: 8, flexShrink: 0 }}>
+                {connected && <Btn small variant="danger" onClick={() => disconnect(t.name)}>Disconnect</Btn>}
+                <Btn small variant={connected ? "secondary" : "primary"} onClick={() => (open ? setEditing(null) : openForm(t.name))}>
+                  {open ? "Cancel" : connected ? "Edit" : "🔌 Connect"}
+                </Btn>
+              </div>
             </div>
-            <div style={{ fontSize: 13, color: C.textMuted, marginTop: 2 }}>{t.purpose}</div>
+
+            {open && (
+              <div style={{ padding: "0 16px 16px", display: "grid", gap: 12, borderTop: `1px solid ${C.border}`, paddingTop: 14 }}>
+                <div>
+                  <label style={lbl}>API Base URL *</label>
+                  <input style={inp} value={form.baseUrl} placeholder="https://company.keka.com/api/v1" onChange={e => setForm({ ...form, baseUrl: e.target.value })} />
+                </div>
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1.4fr", gap: 12 }}>
+                  <div>
+                    <label style={lbl}>Auth header</label>
+                    <input style={inp} value={form.authHeader} placeholder="Authorization" onChange={e => setForm({ ...form, authHeader: e.target.value })} />
+                  </div>
+                  <div>
+                    <label style={lbl}>Auth value / API key *</label>
+                    <input style={inp} type="password" value={form.authValue} placeholder="Bearer xxxxx  or  your API key" onChange={e => setForm({ ...form, authValue: e.target.value })} />
+                  </div>
+                </div>
+                <div>
+                  <label style={lbl}>Notes (optional)</label>
+                  <input style={inp} value={form.notes} placeholder="e.g. read-only key, employee endpoints only" onChange={e => setForm({ ...form, notes: e.target.value })} />
+                </div>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+                  <span style={{ fontSize: 11.5, color: C.textDim }}>Stored privately to your account — only you can see it. Use a read-only key where possible.</span>
+                  <Btn small onClick={save} disabled={saving || !form.baseUrl.trim()}>{saving ? "Saving…" : "Save connection"}</Btn>
+                </div>
+              </div>
+            )}
           </div>
-        </div>
-      ))}
+        );
+      })}
       {(!bp.tools || bp.tools.length === 0) && <EmptyState icon="🔧" title="No tools defined" sub="This agent operates without external integrations" />}
     </div>
   );
@@ -1006,7 +1069,7 @@ function EditTab({ bp, onUpdate }) {
 /* ─────────────────────────────────────────────
    BLUEPRINT SCREEN
    ───────────────────────────────────────────── */
-function BlueprintScreen({ bp, onTest, onBack, onExport, onClone, onDelete, onUpdate, currentUid, admin, onRequestOrg }) {
+function BlueprintScreen({ bp, onTest, onBack, onExport, onClone, onDelete, onUpdate, currentUid, admin, onRequestOrg, connections = {}, onSaveConn, onRemoveConn }) {
   const [tab, setTab] = useState("overview");
   const isOwner = bp._ownerUid === currentUid;
   const canEdit = isOwner || admin;
@@ -1024,7 +1087,7 @@ function BlueprintScreen({ bp, onTest, onBack, onExport, onClone, onDelete, onUp
   const TAB_MAP = {
     overview: <OverviewTab bp={bp} />,
     prompt: <PromptTab bp={bp} />,
-    tools: <ToolsTab bp={bp} />,
+    tools: <ToolsTab key={bp._id} bp={bp} canEdit={canEdit} connections={connections} onSaveConn={onSaveConn} onRemoveConn={onRemoveConn} />,
     workflow: <WorkflowTab bp={bp} />,
     knowledge: <KnowledgeTab key={bp._id} bp={bp} onUpdate={onUpdate} canEdit={canEdit} />,
     memory: <MemoryTab bp={bp} />,
@@ -1492,6 +1555,7 @@ function StudioApp() {
   const [requests, setRequests] = useState([]);
   const [users, setUsers] = useState([]);
   const [adminEmails, setAdminEmails] = useState([]);
+  const [connections, setConnections] = useState({});
   const admin = user ? (isAdminEmail(user.email) || adminEmails.includes((user.email || "").toLowerCase())) : false;
   const bpOnly = (a) => { const { _id, _ownerUid, _ownerName, _ownerEmail, _visibility, _orgStatus, ...bp } = a; return bp; };
 
@@ -1514,6 +1578,7 @@ function StudioApp() {
     upsertUserProfile(user);
     loadAllAgents(user).then(a => { setAgents(a); setLoaded(true); });
     loadAdminEmails().then(setAdminEmails);
+    loadConnections(user.uid).then(setConnections).catch(() => {});
     loadPendingRequests().then(setRequests).catch(() => {});
     loadAllUsers().then(setUsers).catch(() => {});
   }, [user]);
@@ -1628,6 +1693,8 @@ function StudioApp() {
   const adminUnpublish = async (id) => { try { await unpublishOrg(id); } catch (e) { console.error(e); } await refresh(); };
   const onMakeAdmin = async (email) => { try { await addAdmin(email); } catch (e) { console.error(e); } setAdminEmails(await loadAdminEmails()); };
   const onRemoveAdmin = async (email) => { try { await removeAdmin(email); } catch (e) { console.error(e); } setAdminEmails(await loadAdminEmails()); };
+  const onSaveConn = async (name, cfg) => { const next = { ...connections, [name]: cfg }; setConnections(next); try { await saveConnections(user.uid, next); } catch (e) { console.error(e); } };
+  const onRemoveConn = async (name) => { const next = { ...connections }; delete next[name]; setConnections(next); try { await saveConnections(user.uid, next); } catch (e) { console.error(e); } };
 
   if (!authReady) {
     return <div style={{ minHeight: "100vh", background: C.bg, color: C.textMuted, display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "'Inter', sans-serif" }}>Loading…</div>;
@@ -1810,6 +1877,9 @@ function StudioApp() {
             currentUid={user.uid}
             admin={admin}
             onRequestOrg={onRequestOrg}
+            connections={connections}
+            onSaveConn={onSaveConn}
+            onRemoveConn={onRemoveConn}
           />
         )}
 

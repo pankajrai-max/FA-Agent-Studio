@@ -131,3 +131,15 @@ export async function addAdmin(email) {
 export async function removeAdmin(email) {
   await setDoc(doc(db, "config", "admins"), { emails: arrayRemove((email || "").toLowerCase()) }, { merge: true });
 }
+
+// Tool connections — stored PRIVATELY per user (never in the shared agent doc),
+// so a person's API keys/tokens are visible only to them.
+export async function loadConnections(uid) {
+  try {
+    const snap = await getDoc(doc(db, "connections", uid));
+    return snap.exists() ? (snap.data().tools || {}) : {};
+  } catch (e) { console.error("loadConnections failed:", e); return {}; }
+}
+export async function saveConnections(uid, tools) {
+  await setDoc(doc(db, "connections", uid), { tools: tools || {}, updatedAt: Date.now() });
+}

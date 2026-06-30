@@ -21,6 +21,11 @@ service cloud.firestore {
       allow write: if isAdmin();
     }
 
+    // Tool connections: strictly private — only the owner can read or write.
+    match /connections/{uid} {
+      allow read, write: if request.auth != null && request.auth.uid == uid;
+    }
+
     // User directory: each person writes their own profile; admin can read everyone.
     match /users/{uid} {
       allow read: if request.auth != null && (request.auth.uid == uid || isAdmin());
